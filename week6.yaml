@@ -5,7 +5,7 @@ Parameters:
   EnvironmentName:
     Description: Environment name that will be prefixed to resource names
     Type: String
-    Default: 'weeksixproject'
+    Default: 'carvue'
   
   VpcCIDR:
     Description: CIDR block for the VPC
@@ -51,7 +51,7 @@ Parameters:
   DBName:
     Description: The name of the initial database
     Type: String
-    Default: 'imagesdb'
+    Default: 'carvuedb'
     
   DBUsername:
     Description: Database admin username
@@ -70,7 +70,7 @@ Parameters:
   InitialContainerImage:
     Description: Initial container image to use (should be a valid public image)
     Type: String
-    Default: 'public.ecr.aws/e2h5u6h2/image-uploader-app:latest'
+    Default: 'public.ecr.aws/r1b3l1w9/carvue:carvue_image'
 
   # Add deployment toggle parameter
   DeployService:
@@ -443,7 +443,7 @@ Resources:
   ImagesBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${EnvironmentName}-images-${AWS::AccountId}'
+      BucketName: !Sub '${EnvironmentName}-app'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true

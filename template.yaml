@@ -42,26 +42,21 @@ Parameters:
   DBName:
     Description: Name of the database
     Type: String
-    Default: appdb
+    Default: carvue
     MinLength: 1
     MaxLength: 64
     AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
 
   DBUsername:
-    Description: Username for the database
-    Type: String
-    NoEcho: true
-    MinLength: 1
-    MaxLength: 16
-    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    Description: Database username (retrieved from SSM)
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: "/carvue/db/username"
 
   DBPassword:
-    Description: Password for the database
-    Type: String
-    NoEcho: true
-    MinLength: 8
-    MaxLength: 41
-    AllowedPattern: '[a-zA-Z0-9]*'
+    Description: Database password (retrieved from SSM)
+    Type: AWS::SSM::Parameter::Value<SecureString>
+    Default: "/carvue/db/password"
+
 
   # ECS Parameters
   ContainerImage:

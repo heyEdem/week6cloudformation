@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'VPC Infrastructure for Containerized Web Application with RDS PostgreSQL and Secrets Manager'
+Description: 'VPC Infrastructure for Containerized Web Application with RDS PostgreSQL and SSM Parameter Store'
 
 Parameters:
   EnvironmentName:
@@ -41,38 +41,35 @@ Parameters:
     Description: CIDR block for Database Private Subnet 2
     Type: String
     Default: '10.0.6.0/24'
-    
-  # Database parameters
+  
   DBInstanceType:
     Description: Database instance type
     Type: String
     Default: 'db.t3.small'
-    
+  
   DBName:
     Description: The name of the initial database
     Type: String
     Default: 'carvuedb'
-    
+  
   DBUsername:
     Description: Database admin username
     Type: String
     Default: 'postgres'
     NoEcho: true
-    
-  # DBPassword:
-  #   Description: Database admin password
-  #   Type: String
-  #   NoEcho: true
-  #   MinLength: 8
-  #   Default: ''
-    
-  # Add initial container image parameter
+  
+  DBPassword:
+    Description: Database admin password
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Default: 'postgress' # Default for demo; should be overridden
+  
   InitialContainerImage:
     Description: Initial container image to use (should be a valid public image)
     Type: String
     Default: 'public.ecr.aws/r1b3l1w9/carvue:carvue_image'
 
-  # Add deployment toggle parameter
   DeployService:
     Description: Whether to deploy the ECS service (set to false for initial infrastructure)
     Type: String
@@ -82,11 +79,9 @@ Parameters:
       - 'false'
 
 Conditions:
-  # Define conditions for optional resources
   ShouldDeployService: !Equals [!Ref DeployService, 'true']
 
 Resources:
-  # VPC
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -97,7 +92,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-VPC'
 
-  # Internet Gateway
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -111,7 +105,6 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref VPC
 
-  # Public Subnets
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -134,7 +127,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-PublicSubnet2'
 
-  # Private Subnets for Application
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -157,7 +149,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-PrivateSubnet2'
 
-  # Database Private Subnets
   DatabasePrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -180,7 +171,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-DatabasePrivateSubnet2'
 
-  # NAT Gateways with Elastic IPs
   NatGateway1EIP:
     Type: AWS::EC2::EIP
     DependsOn: InternetGatewayAttachment
@@ -211,7 +201,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-NatGateway2'
 
-  # Route Tables
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -282,7 +271,6 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable2
       SubnetId: !Ref PrivateSubnet2
 
-  # Database Route Tables
   DatabaseRouteTable1:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -325,7 +313,6 @@ Resources:
       RouteTableId: !Ref DatabaseRouteTable2
       SubnetId: !Ref DatabasePrivateSubnet2
 
-  # Security Groups
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -362,7 +349,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-ECS-SG'
 
-  # Database Security Group
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -377,7 +363,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-DB-SG'
 
-  # Application Load Balancer
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     DependsOn: InternetGatewayAttachment
@@ -407,7 +392,7 @@ Resources:
       TargetType: ip
       HealthCheckEnabled: true
       HealthCheckIntervalSeconds: 30
-      HealthCheckPath: /
+      多元HealthCheckPath: / 
       HealthCheckProtocol: HTTP
       HealthCheckPort: '5000'
       HealthCheckTimeoutSeconds: 5
@@ -427,7 +412,6 @@ Resources:
       Port: 80
       Protocol: HTTP
 
-  # ECS Cluster
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -439,7 +423,6 @@ Resources:
         - CapacityProvider: FARGATE
           Weight: 1
 
-  # S3 Bucket
   ImagesBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -463,7 +446,6 @@ Resources:
               - '*'
             MaxAge: 3000
 
-  # S3 Bucket Policy
   ImagesBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -483,7 +465,6 @@ Resources:
               - !Sub 'arn:aws:s3:::${ImagesBucket}'
               - !Sub 'arn:aws:s3:::${ImagesBucket}/*'
 
-  # RDS Database Subnet Group
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -495,7 +476,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-DB-SubnetGroup'
 
-  # RDS PostgreSQL Database
   PostgreSQLDatabase:
     Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
@@ -506,7 +486,7 @@ Resources:
       Engine: postgres
       EngineVersion: '17.4'
       MasterUsername: !Ref DBUsername
-      ManageMasterUserPassword: true
+      MasterUserPassword: !Ref DBPassword
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
       VPCSecurityGroups:
         - !Ref DatabaseSecurityGroup
@@ -520,16 +500,33 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-PostgreSQL'
 
-  # AWS Secrets Manager for DB Credentials
-  DatabaseSecret:
-    Type: AWS::SecretsManager::Secret
+  DBUrlParameter:
+    Type: AWS::SSM::Parameter
     DependsOn: PostgreSQLDatabase
     Properties:
-      Name: !Sub '${EnvironmentName}/database/credentials'
-      Description: 'Secret for RDS PostgreSQL credentials'
-      SecretString: !Sub '{"username":"${DBUsername}","host":"${PostgreSQLDatabase.Endpoint.Address}","port":"${PostgreSQLDatabase.Endpoint.Port}","dbname":"${DBName}"}'
+      Name: '/car/db/url'
+      Type: String
+      Value: !Sub 'jdbc:postgresql://${PostgreSQLDatabase.Endpoint.Address}:${PostgreSQLDatabase.Endpoint.Port}/${DBName}'
+      Description: 'Database connection URL'
 
-  # ECS Task Execution Role
+  DBUsernameParameter:
+    Type: AWS::SSM::Parameter
+    DependsOn: PostgreSQLDatabase
+    Properties:
+      Name: '/car/db/username'
+      Type: String
+      Value: !Ref DBUsername
+      Description: 'Database username'
+
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    DependsOn: PostgreSQLDatabase
+    Properties:
+      Name: '/car/db/password'
+      Type: SecureString
+      Value: !Ref DBPassword
+      Description: 'Database password'
+
   ECSTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -556,27 +553,26 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::${ImagesBucket}'
                   - !Sub 'arn:aws:s3:::${ImagesBucket}/*'
-        - PolicyName: SecretsManagerAccess
+        - PolicyName: ParameterStoreAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - 'secretsmanager:GetSecretValue'
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
                 Resource:
-                  - !Ref DatabaseSecret
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/car/db/*'
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-TaskExecutionRole'
 
-  # CloudWatch Logs
   CloudWatchLogsGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/ecs/${EnvironmentName}'
       RetentionInDays: 30
 
-  # Task Definition - using initial image parameter
   WebAppTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -607,11 +603,13 @@ Resources:
               Value: !Ref ImagesBucket
             - Name: AWS_REGION
               Value: !Ref AWS::Region
-            - Name: DB_SECRET_ARN
-              Value: !Ref DatabaseSecret
           Secrets:
-            - Name: DB_CONNECTION_STRING
-              ValueFrom: !Ref DatabaseSecret
+            - Name: DB_URL
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/car/db/url'
+            - Name: DB_USERNAME
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/car/db/username'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/car/db/password'
           HealthCheck:
             Command:
               - CMD-SHELL
@@ -624,7 +622,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-TaskDefinition'
 
-  # Green Target Group for Blue/Green Deployment
   GreenTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -645,7 +642,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-GreenTG'
 
-  # Test listener for Blue/Green deployment testing
   TestListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -656,7 +652,6 @@ Resources:
       Port: 5001
       Protocol: HTTP
 
-  # CodeDeploy Service Role
   CodeDeployServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -673,14 +668,12 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-CodeDeployRole'
 
-  # CodeDeploy resources for Blue/Green deployment
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
     Properties:
       ApplicationName: !Sub '${EnvironmentName}-deploy-app'
       ComputePlatform: ECS
 
-  # Conditionally deploy the ECS service
   WebAppService:
     Type: AWS::ECS::Service
     Condition: ShouldDeployService
@@ -712,7 +705,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-Service'
 
-  # Conditionally deploy the CodeDeploy deployment group
   CodeDeployDeploymentGroup:
     Type: AWS::CodeDeploy::DeploymentGroup
     Condition: ShouldDeployService
@@ -745,7 +737,6 @@ Resources:
               - Name: !GetAtt ALBTargetGroup.TargetGroupName
               - Name: !GetAtt GreenTargetGroup.TargetGroupName
 
-  # Auto Scaling (only when service is deployed)
   WebAppAutoScalingTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Condition: ShouldDeployService
@@ -844,8 +835,20 @@ Outputs:
     Export:
       Name: !Sub '${EnvironmentName}-S3BucketName'
 
-  DatabaseSecretArn:
-    Description: ARN of the Database Credentials Secret
-    Value: !Ref DatabaseSecret
+  DatabaseUrlParameterArn:
+    Description: ARN of the Database URL Parameter
+    Value: !Ref DBUrlParameter
     Export:
-      Name: !Sub '${EnvironmentName}-DatabaseSecretArn'
+      Name: !Sub '${EnvironmentName}-DatabaseUrlParameterArn'
+
+  DatabaseUsernameParameterArn:
+    Description: ARN of the Database Username Parameter
+    Value: !Ref DBUsernameParameter
+    Export:
+      Name: !Sub '${EnvironmentName}-DatabaseUsernameParameterArn'
+
+  DatabasePasswordParameterArn:
+    Description: ARN of the Database Password Parameter
+    Value: !Ref DBPasswordParameter
+    Export:
+      Name: !Sub '${EnvironmentName}-DatabasePasswordParameterArn'

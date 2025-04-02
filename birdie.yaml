@@ -23,7 +23,12 @@ Parameters:
   PublicSubnet2CIDR:
     Description: CIDR block for the public subnet in AZ 2
     Type: String
-    Default: 10.0.2.0/24
+    Default: 10.0.2.0/24 
+    
+  PublicSubnet3CIDR:
+    Description: CIDR block for the public subnet in AZ 2
+    Type: String
+    Default: 10.0.5.0/24
 
   PrivateSubnet1CIDR:
     Description: CIDR block for the private subnet in AZ 1
@@ -148,6 +153,17 @@ Resources:
       Tags:
         - Key: Name
           Value: PublicSubnet2
+          
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet3CIDR
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
+      Tags:
+        - Key: Name
+          Value: PublicSubnet3
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet

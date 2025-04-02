@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Fargate Web Application with Pre-existing VPC and RDS'
+
+Parameters:
+  EnvironmentName:
+    Description: Environment name that will be prefixed to resource names
+    Type: String
+    Default: 'carvue'
+
+  InitialContainerImage:
+    Description: Initial container image to use
+    Type: String
+    Default: 'public.ecr.aws/r1b3l1w9/carvue:carvue_image'
+
+  DeployService:
+    Description: Whether to deploy the ECS service
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  ShouldDeployService: !Equals [!Ref DeployService, 'true']
+
+Resources:
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-ALB'
+      Subnets:
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-PublicSubnet1Id" }
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-PublicSubnet2Id" }
+      SecurityGroups:
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-ALBSecurityGroupId" }
+      Scheme: internet-facing
+      Type: application
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ALB'
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-TargetGroup'
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !ImportValue { "Fn::Sub": "${EnvironmentName}-VpcId" }
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      HealthCheckPort: '5000'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-TargetGroup'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${EnvironmentName}-Cluster'
+      CapacityProviders:
+        - FARGATE
+
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: 'carvue-bucket'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImagesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:DeleteObject
+            Resource:
+              - 'arn:aws:s3:::carvue-bucket'
+              - 'arn:aws:s3:::carvue-bucket/*'
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                  - 's3:DeleteObject'
+                Resource:
+                  - 'arn:aws:s3:::carvue-bucket'
+                  - 'arn:aws:s3:::carvue-bucket/*'
+        - PolicyName: SSMAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/carvue/db/*'
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${EnvironmentName}'
+      RetentionInDays: 30
+
+  WebAppTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvironmentName}-task'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !Ref ECSTaskExecutionRole
+      ContainerDefinitions:
+        - Name: !Sub '${EnvironmentName}-container'
+          Image: !Ref InitialContainerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 5000
+              HostPort: 5000
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: S3_BUCKET_NAME
+              Value: 'carvue-bucket'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: DB_URL
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/carvue/db/url'
+            - Name: DB_USERNAME
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/carvue/db/username'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/carvue/db/password'
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:5000/ || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  WebAppService:
+    Type: AWS::ECS::Service
+    Condition: ShouldDeployService
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub '${EnvironmentName}-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref WebAppTaskDefinition
+      DesiredCount: 2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue { "Fn::Sub": "${EnvironmentName}-ECSSecurityGroupId" }
+          Subnets:
+            - !ImportValue { "Fn::Sub": "${EnvironmentName}-PrivateSubnet1Id" }
+            - !ImportValue { "Fn::Sub": "${EnvironmentName}-PrivateSubnet2Id" }
+      LoadBalancers:
+        - ContainerName: !Sub '${EnvironmentName}-container'
+          ContainerPort: 5000
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcId: !ImportValue { "Fn::Sub": "${EnvironmentName}-VpcId" }
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-PrivateSubnet1Id" }
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-PrivateSubnet2Id" }
+      SecurityGroupIds:
+        - !ImportValue { "Fn::Sub": "${EnvironmentName}-ECSSecurityGroupId" }
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+Outputs:
+  AlbDnsName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${EnvironmentName}-AlbDnsName'

@@ -4,12 +4,8 @@ Parameters:
   EnvironmentName:
     Description: Environment name that will be prefixed to resource names
     Type: String
-    Default: birdie
-    
-  IsProjectCompleted: 
-    Type: String
-    Default: true
-    
+    Default: carvue
+
   VpcCIDR:
     Description: CIDR block for the VPC
     Type: String
@@ -48,13 +44,19 @@ Parameters:
   DBUsername:
     Description: Username for the RDS PostgreSQL database
     Type: String
-    Default: birdieadmin
+    Default: carvueadmin
+    NoEcho: true
+
+  DBPassword:
+    Description: Password for the RDS PostgreSQL database
+    Type: String
+    Default: secret1234
     NoEcho: true
 
   DBName:
     Description: Name of the database
     Type: String
-    Default: birdiedb
+    Default: carvuedb
 
   DBInstanceClass:
     Description: RDS instance type
@@ -67,42 +69,49 @@ Parameters:
     Default: 5000
 
 Resources:
-  # SSM Parameters (password is pre-created manually)
+  # Systems Manager Parameter Store
   DBNameParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /birdie/db/name
+      Name: /carvue/db/name
       Type: String
-      Value: !Ref DBName
-      Description: "RDS PostgreSQL database name for Birdie application"
+      Value: carvuedb1
+      Description: "RDS PostgreSQL database name for Carvue application"
 
   DBUsernameParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /birdie/db/username
+      Name: /carvue/db/username
       Type: String
       Value: !Ref DBUsername
-      Description: "RDS PostgreSQL username for Birdie application"
+      Description: "RDS PostgreSQL username for Carvue application"
+
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /carvue/db/password
+      Type: String
+      Value: !Ref DBPassword
+      Description: "RDS PostgreSQL password for Carvue application"
 
   DBURLParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: /birdie/db/url
+      Name: /carvue/db/url
       Type: String
-      Value: !Sub 'jdbc:postgresql://${BirdieDB.Endpoint.Address}:${BirdieDB.Endpoint.Port}/${DBName}'
-      Description: "RDS PostgreSQL URL for Birdie application"
+      Value: !Sub 'jdbc:postgresql://${CarvueDB.Endpoint.Address}:${CarvueDB.Endpoint.Port}/${DBName}'
+      Description: "RDS PostgreSQL URL for Carvue application"
 
-  # RDS Instance
-  BirdieDB:
+  CarvueDB:
     Type: AWS::RDS::DBInstance
     Properties:
-      DBInstanceIdentifier: birdie
+      DBInstanceIdentifier: carvue
       AllocatedStorage: 20
-      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceClass: db.t3.micro
       Engine: postgres
       EngineVersion: "17.2"
       MasterUsername: !Ref DBUsername
-      MasterUserPassword: "{{resolve:ssm:/birdie/db/password:1}}"  # References pre-created SSM parameter
+      MasterUserPassword: !Ref DBPassword
       MultiAZ: true
       PubliclyAccessible: false
       StorageType: gp2
@@ -114,9 +123,9 @@ Resources:
       DeletionProtection: false
       Tags:
         - Key: Name
-          Value: BirdieDB
+          Value: CarvueDB
 
-  # VPC and Subnets
+  # VPC
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -125,8 +134,9 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Sub "${EnvironmentName}-VPC"
+          Value: carvue-VPC
 
+  # Public Subnets (for Load Balancer)
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -149,6 +159,7 @@ Resources:
         - Key: Name
           Value: PublicSubnet2
 
+  # Private Subnets (for ECS)
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -171,18 +182,7 @@ Resources:
         - Key: Name
           Value: PrivateSubnet2
 
-  RDSSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: "Subnet group for RDS PostgreSQL"
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-      Tags:
-        - Key: Name
-          Value: RDSSubnetGroup
-
-  # Internet Gateway and NAT
+  # Internet Gateway
   InternetGateway:
     Type: AWS::EC2::InternetGateway
 
@@ -192,6 +192,7 @@ Resources:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
+  # NAT Gateway for Private Subnets
   NatGatewayEIP:
     Type: AWS::EC2::EIP
     DependsOn: AttachGateway
@@ -207,7 +208,6 @@ Resources:
         - Key: Name
           Value: NatGateway
 
-  # Security Groups
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -222,33 +222,16 @@ Resources:
         - Key: Name
           Value: RDSSecurityGroup
 
-  LoadBalancerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
     Properties:
-      GroupDescription: "Allow HTTP traffic to the Load Balancer"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
-  ECSServiceSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: "Allow inbound traffic from Load Balancer to ECS service"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: !Ref ContainerPort
-          ToPort: !Ref ContainerPort
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
+      DBSubnetGroupDescription: "Subnet group for RDS PostgreSQL"
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: RDSSubnetGroup
 
   # Route Tables
   PublicRouteTable:
@@ -279,6 +262,7 @@ Resources:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
+  # Private Route Table
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -307,12 +291,12 @@ Resources:
       RouteTableId: !Ref PrivateRouteTable
 
   # ECS Cluster
-  BirdieCluster:
+  CarvueCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: BirdieCluster
+      ClusterName: CarvueCluster
 
-  # IAM Roles
+  # Task Execution Role
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -338,7 +322,6 @@ Resources:
                   - ecr:BatchGetImage
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                  - ssm:GetParameters
                 Resource: '*'
 
   S3AccessRole:
@@ -355,21 +338,9 @@ Resources:
               - sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonS3FullAccess
-      Policies:
-        - PolicyName: SSMParameterAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameters
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/birdie/db/password"
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/birdie/db/*"
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/birdie/db/url"
-                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/birdie/db/username"
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
 
+  # CodeDeploy role for blue-green deployments
   CodeDeployServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -385,15 +356,16 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
 
+  # Create log group
   ECSLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: birdie-log-group
+      LogGroupName: carvue-log-group
 
   ECSTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: birdie-task
+      Family: carvue-task
       RequiresCompatibilities:
         - FARGATE
       Cpu: '2048'
@@ -402,15 +374,15 @@ Resources:
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt S3AccessRole.Arn
       ContainerDefinitions:
-        - Name: birdie-container
+        - Name: carvue-container
           Essential: true
-          Image: public.ecr.aws/r1b3l1w9/birdie:latest  # Update to your ECR repo
+          Image: public.ecr.aws/r1b3l1w9/carvue:latest # Updated to match your ECR repo
           PortMappings:
             - ContainerPort: !Ref ContainerPort
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: birdie-log-group
+              awslogs-group: carvue-log-group
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
           Environment:
@@ -418,19 +390,58 @@ Resources:
               Value: !Ref DBName
             - Name: DB_USERNAME
               Value: !Ref DBUsername
+            - Name: DB_PASSWORD
+              Value: !Ref DBPassword
             - Name: DB_URL
-              Value: !Sub 'jdbc:postgresql://${BirdieDB.Endpoint.Address}:${BirdieDB.Endpoint.Port}/${DBName}'
+              Value: !Sub 'jdbc:postgresql://${CarvueDB.Endpoint.Address}:${CarvueDB.Endpoint.Port}/${DBName}'
             - Name: SPRING_PROFILES_ACTIVE
               Value: "dev"
-          Secrets:
-            - Name: DB_PASSWORD
-              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/birdie/db/password"
 
-  # Load Balancer and Rest
-  BirdieLoadBalancer:
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP and HTTPS traffic to the Load Balancer"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow inbound traffic from Load Balancer to ECS service"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # Application Load Balancer
+  CarvueLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: birdie-load-balancer
+      Name: carvue-load-balancer
       Subnets:
         - !Ref PublicSubnet1
         - !Ref PublicSubnet2
@@ -439,61 +450,66 @@ Resources:
       Scheme: internet-facing
       Type: application
 
+  # Production target group (initially blue environment)
   BlueTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: birdie-blue-target
+      Name: carvue-blue-target
       Port: !Ref ContainerPort
       Protocol: HTTP
       VpcId: !Ref VPC
       TargetType: ip
-      HealthCheckPath: /  # Adjust if needed for birdie app
+      HealthCheckPath: /
       HealthCheckTimeoutSeconds: 60
       HealthCheckIntervalSeconds: 70
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: "300"
 
+  # Green target group for new deployments
   GreenTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: birdie-green-target
+      Name: carvue-green-target
       Port: !Ref ContainerPort
       Protocol: HTTP
       VpcId: !Ref VPC
       TargetType: ip
-      HealthCheckPath: /  # Adjust if needed for birdie app
+      HealthCheckPath: /
       HealthCheckTimeoutSeconds: 60
       HealthCheckIntervalSeconds: 70
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: "300"
 
+  # Test listener for validation testing before switching traffic
   TestListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref GreenTargetGroup
-      LoadBalancerArn: !Ref BirdieLoadBalancer
+      LoadBalancerArn: !Ref CarvueLoadBalancer
       Port: 5000
       Protocol: HTTP
 
+  # Production listener (initially points to blue environment)
   ProductionListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref BlueTargetGroup
-      LoadBalancerArn: !Ref BirdieLoadBalancer
+      LoadBalancerArn: !Ref CarvueLoadBalancer
       Port: 80
       Protocol: HTTP
 
+  # ECS Service
   ECSService:
     Type: AWS::ECS::Service
     Properties:
-      ServiceName: birdie-service
-      Cluster: !Ref BirdieCluster
+      ServiceName: carvue-service
+      Cluster: !Ref CarvueCluster
       TaskDefinition: !Ref ECSTaskDefinition
       LaunchType: FARGATE
       SchedulingStrategy: REPLICA
@@ -509,27 +525,93 @@ Resources:
             - !Ref ECSServiceSecurityGroup
       LoadBalancers:
         - TargetGroupArn: !Ref BlueTargetGroup
-          ContainerName: birdie-container
+          ContainerName: carvue-container
           ContainerPort: !Ref ContainerPort
+      PropagateTags: SERVICE
+      EnableECSManagedTags: true
       DeploymentController:
         Type: CODE_DEPLOY
     DependsOn:
       - ProductionListener
       - TestListener
 
+  # IAM Role for Auto Scaling
+  ECSAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ECSAutoScalingPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                  - application-autoscaling:RegisterScalableTarget
+                  - application-autoscaling:DescribeScalableTargets
+                  - application-autoscaling:PutScalingPolicy
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - application-autoscaling:*
+                Resource: "*"
+
+  # Auto Scaling Target
+  ECSAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 3
+      MinCapacity: 1
+      ResourceId: !Join
+        - '/'
+        - - service
+          - !Ref CarvueCluster
+          - !GetAtt ECSService.Name
+      RoleARN: !GetAtt ECSAutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  # Auto Scaling Policy
+  ECSAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: ECSAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ECSAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 50
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+
+  # CodeDeploy Application
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
     Properties:
-      ApplicationName: birdie-application
+      ApplicationName: carvue-application
       ComputePlatform: ECS
 
+  # CodeDeploy Deployment Group
   DeploymentGroup:
     Type: AWS::CodeDeploy::DeploymentGroup
     Properties:
       ApplicationName: !Ref CodeDeployApplication
       ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
       DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
-      DeploymentGroupName: birdie-deployment-group
+      DeploymentGroupName: carvue-deployment-group
       DeploymentStyle:
         DeploymentType: BLUE_GREEN
         DeploymentOption: WITH_TRAFFIC_CONTROL
@@ -540,7 +622,7 @@ Resources:
           Action: TERMINATE
           TerminationWaitTimeInMinutes: 5
       ECSServices:
-        - ClusterName: !Ref BirdieCluster
+        - ClusterName: !Ref CarvueCluster
           ServiceName: !GetAtt ECSService.Name
       LoadBalancerInfo:
         TargetGroupPairInfoList:
@@ -555,12 +637,18 @@ Resources:
               - Name: !GetAtt GreenTargetGroup.TargetGroupName
 
 Outputs:
-  BirdieLoadBalancerDNS:
+  CarvueLoadBalancerDNS:
     Description: The DNS name of the load balancer
-    Value: !GetAtt BirdieLoadBalancer.DNSName
-  BirdieLoadBalancerURL:
+    Value: !GetAtt CarvueLoadBalancer.DNSName
+  CarvueLoadBalancerURL:
     Description: URL of the load balancer
-    Value: !Join ['', ['http://', !GetAtt BirdieLoadBalancer.DNSName]]
+    Value: !Join ['', ['http://', !GetAtt CarvueLoadBalancer.DNSName]]
+  CodeDeployAppName:
+    Description: CodeDeploy Application Name for ECS Blue-Green Deployments
+    Value: !Ref CodeDeployApplication
+  CodeDeployGroupName:
+    Description: CodeDeploy Deployment Group Name
+    Value: !Ref DeploymentGroup
   RDSEndpoint:
     Description: "RDS PostgreSQL endpoint"
-    Value: !GetAtt BirdieDB.Endpoint.Address
+    Value: !GetAtt CarvueDB.Endpoint.Address
